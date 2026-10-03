@@ -1,0 +1,5 @@
+# Accepted / false-positive findings. One ID per line, each with a justification above it.
+# Keep this list short: every entry must be explained in your security write-up.
+#
+# Example:
+# CVE-2024-47685   # linux-libc-dev: kernel headers only; containers use the HOST kernel, so not exploitable here

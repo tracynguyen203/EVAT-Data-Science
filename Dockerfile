@@ -1,28 +1,26 @@
-FROM python:3.12.3
+# Slim, current Debian 12 base. The old python:3.12.3 (full, Debian 12.5) image was the source of
+# ~2,300 of the HIGH/CRITICAL findings Trivy reported (kernel headers, -dev libs, old libc, etc.).
+FROM python:3.12-slim-bookworm
 
-# Set the working directory
 WORKDIR /main
 
-# Copy the requirements file from 'main'
+# Pull in the latest Debian security patches published since the base image was built
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY ./main/requirements.txt /main/requirements.txt
 
-# Install the dependencies
-RUN pip install --no-cache-dir --upgrade -r /main/requirements.txt
+# setuptools / wheel are upgraded because Trivy flagged the versions bundled with the base image
+RUN pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" "wheel>=0.46.2" \
+    && pip install --no-cache-dir --upgrade -r /main/requirements.txt
 
-# Copy the application code from the 'main/app' directory
-# COPY ./main/app /main/app
 COPY ./main /main
 
-# # Copy the run.py script
-# COPY ./main/run.py /main/run.py
-
-# Set environment variables
 ENV FLASK_APP=run.py
 ENV FLASK_RUN_HOST=0.0.0.0
 ENV FLASK_RUN_PORT=5000
 
-# Expose port 5000
 EXPOSE 5000
 
-# Define the default command (assuming you want to run run.py)
 CMD ["flask", "run"]

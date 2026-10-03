@@ -119,11 +119,13 @@ pipeline {
                 }
 
                 // (b) OS + library vulnerabilities in the built image (HIGH/CRITICAL with a fix available)
+                //     Full report -> reports/trivy.txt (archived). Console only gets the totals, because the
+                //     complete table can be thousands of lines long. Accepted findings go in .trivyignore.
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     bat '''
-                        docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ -v "%WORKSPACE%/reports:/reports" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --no-progress --exit-code 1 --output /reports/trivy.txt %LOCAL_IMAGE%
+                        docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ -v "%WORKSPACE%:/src:ro" -v "%WORKSPACE%/reports:/reports" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /src/.trivyignore --no-progress --exit-code 1 --output /reports/trivy.txt %LOCAL_IMAGE%
                         set RC=%ERRORLEVEL%
-                        if exist reports\\trivy.txt type reports\\trivy.txt
+                        if exist reports\\trivy.txt findstr /C:"Report Summary" /C:"Total:" /C:"(debian" /C:"python-pkg" reports\\trivy.txt
                         exit /b %RC%
                     '''
                 }
