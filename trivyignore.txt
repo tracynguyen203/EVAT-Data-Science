@@ -1,0 +1,19 @@
+# Accepted Trivy findings (used via --ignorefile in the Jenkinsfile Security stage).
+# Kept as a normal visible file name on purpose: dotfiles like ".trivyignore" are easy to lose on Windows.
+# Every entry is explained in the security write-up and expires so it gets re-checked.
+#
+# The four IDs below are NOT in the application's dependencies. They are libraries that pip 26.2.1
+# bundles privately inside itself (pip/_vendor: msgpack 1.1.2, urllib3 2.7.0, setuptools 70.3.0).
+# The app's own copies are patched (urllib3 2.8.0, setuptools 84.0.0; pip-audit reports none).
+# pip is a build-time tool, is already the latest release, and is never run or imported by the
+# Flask app at runtime. A vendored copy can only be updated by a new pip release.
+
+# msgpack (vendored in pip): unpacker crash / out-of-bounds read
+GHSA-6v7p-g79w-8964 exp:2026-12-31
+
+# setuptools/pkg_resources (vendored in pip): path traversal in PackageIndex (pip never uses PackageIndex)
+CVE-2025-47273 exp:2026-12-31
+
+# urllib3 (vendored in pip): HTTPS-proxy TLS override and chunk-parser DoS (only when pip itself downloads packages)
+CVE-2026-97687 exp:2026-12-31
+CVE-2026-97689 exp:2026-12-31

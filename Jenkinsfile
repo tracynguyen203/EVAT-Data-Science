@@ -120,10 +120,11 @@ pipeline {
 
                 // (b) OS + library vulnerabilities in the built image (HIGH/CRITICAL with a fix available)
                 //     Full report -> reports/trivy.txt (archived and printed; short now that the base image is clean).
-                //     Accepted findings go in .trivyignore.
+                //     Accepted findings go in trivyignore.txt (repo root).
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     bat '''
-                        docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ -v "%WORKSPACE%:/src:ro" -v "%WORKSPACE%/reports:/reports" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /src/.trivyignore --no-progress --exit-code 1 --output /reports/trivy.txt %LOCAL_IMAGE%
+                        if exist trivyignore.txt (echo Using trivyignore.txt from the repo root) else (echo WARNING: trivyignore.txt NOT FOUND in the repo root - accepted findings will not be ignored)
+                        docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ -v "%WORKSPACE%:/src:ro" -v "%WORKSPACE%/reports:/reports" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /src/trivyignore.txt --no-progress --exit-code 1 --output /reports/trivy.txt %LOCAL_IMAGE%
                         set RC=%ERRORLEVEL%
                         if exist reports\\trivy.txt type reports\\trivy.txt
                         exit /b %RC%
@@ -174,8 +175,13 @@ pipeline {
                         if ($env:DH_USER -match '[@ ]') { Write-Host "WARNING: DH_USER contains '@' or a space - use your Docker Hub USERNAME, not your email" }
                         if ($env:DH_USER -ne $env:DH_NAMESPACE) { Write-Host "NOTE: DH_USER differs from DH_NAMESPACE" }
                         # --- end diagnostics ---
-                        $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
-                        if ($LASTEXITCODE -ne 0) { exit 1 }
+                        # Token goes to docker via a temp file instead of a PowerShell pipe, so no encoding/BOM/newline can alter it
+                        $tmp = New-TemporaryFile
+                        [System.IO.File]::WriteAllText($tmp.FullName, $env:DH_PASS)
+                        cmd /c "docker login -u $($env:DH_USER) --password-stdin < `"$($tmp.FullName)`""
+                        $rc = $LASTEXITCODE
+                        Remove-Item $tmp.FullName -Force
+                        if ($rc -ne 0) { exit 1 }
                         docker tag $env:LOCAL_IMAGE "${remote}:$($env:IMAGE_TAG)"
                         docker tag $env:LOCAL_IMAGE "${remote}:latest"
                         docker push "${remote}:$($env:IMAGE_TAG)"
