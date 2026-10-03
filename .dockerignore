@@ -1,0 +1,7 @@
+# The Dockerfile only needs ./main - keep notebooks, datasets and .git out of the build context
+*
+!main
+!Dockerfile
+**/__pycache__
+**/*.pyc
+**/.ipynb_checkpoints

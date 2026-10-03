@@ -1,0 +1,32 @@
+# Used by Jenkins for BOTH environments (different project name + port):
+#   docker compose -p evat-staging up -d   (APP_IMAGE=local image,  HOST_PORT=5001)
+#   docker compose -p evat-prod    up -d   (APP_IMAGE=Docker Hub,   HOST_PORT=5000)
+services:
+  app:
+    image: ${APP_IMAGE:-evat-data-science:latest}
+    ports:
+      - "${HOST_PORT:-5000}:5000"
+    environment:
+      - MONGO_URI=${MONGO_URI:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 5000), 3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Monitoring + alerting (only started with --profile monitoring)
+  # Dashboard: http://localhost:3001
+  # Inside Kuma, monitor the app at  http://app:5000/  (same Compose network)
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    profiles: ["monitoring"]
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  uptime_kuma_data:
