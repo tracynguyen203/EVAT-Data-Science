@@ -1,15 +1,3 @@
-// =============================================================================
-// EVAT Data Science - Jenkins CI/CD pipeline (WINDOWS agent)
-// Stages: Build > Test > Code Quality > Security > Deploy > Release > Monitoring
-//
-// Credentials expected in Jenkins (Manage Jenkins > Credentials > Global):
-//   sonarqube-token  (Secret text)
-//   dockerhub-creds  (Username with password)
-//   github-token     (Username with password - PAT)
-//   uptime-kuma-push-token  (Secret text)  <- create this one for the Monitoring stage
-// =============================================================================
-
-// Polls a URL until the service answers with anything below HTTP 500.
 def waitForHttp(String url) {
     withEnv(["CHECK_URL=${url}"]) {
         powershell '''
@@ -47,23 +35,19 @@ pipeline {
         APP_NAME       = 'evat-data-science'
         IMAGE_TAG      = "${env.BUILD_NUMBER}"
         LOCAL_IMAGE    = "evat-data-science:${env.BUILD_NUMBER}"
-
-        // ---- CHANGE THESE ----
-        DH_NAMESPACE   = 'tracynguyen203'                                   // your Docker Hub username
-        GITHUB_REPO    = 'github.com/tracynguyen203/EVAT-Data-Science.git' // repo you can push tags to
-        // ----------------------
-
+        DH_NAMESPACE   = 'tracynguyen203'                                   
+        GITHUB_REPO    = 'github.com/tracynguyen203/EVAT-Data-Science.git' 
         PROD_IMAGE     = "tracynguyen203/evat-data-science:${env.BUILD_NUMBER}"
         SONAR_HOST_URL = 'http://host.docker.internal:9000'
         STAGING_PORT   = '5001'
         PROD_PORT      = '5000'
-        KUMA_URL       = 'http://localhost:3001'   // Uptime Kuma dashboard
+        KUMA_URL       = 'http://localhost:3001'   
         DOCKER_BUILDKIT = '1'
     }
 
     stages {
 
-        // ---------------------------------------------------------------- 1
+        // Stage 1
         stage('Build') {
             steps {
                 bat 'git log -1 --oneline'
@@ -78,7 +62,7 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 2
+        // Stage 2
         stage('Test') {
             steps {
                 bat 'if not exist reports mkdir reports'
@@ -92,7 +76,7 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 3
+        // Stage 3
         stage('Code Quality') {
             steps {
                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
@@ -106,7 +90,7 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 4
+        // Stage 4
         stage('Security') {
             steps {
                 bat 'if not exist reports mkdir reports'
@@ -133,7 +117,7 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 5
+        // Stage 5
         stage('Deploy') {
             steps {
                 // Staging = same image, run via Docker Compose on port 5001
@@ -158,7 +142,7 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 6
+        // Stage 6
         stage('Release') {
             steps {
                 // (a) Publish the versioned image to Docker Hub
@@ -167,15 +151,6 @@ pipeline {
                                                   passwordVariable: 'DH_PASS')]) {
                     powershell '''
                         $remote = "$($env:DH_NAMESPACE)/$($env:APP_NAME)"
-                        # --- temporary credential diagnostics: prints lengths/flags only, never the secret ---
-                        Write-Host "DH_USER         = '$($env:DH_USER)' (length $($env:DH_USER.Length))"
-                        Write-Host "DH_NAMESPACE    = '$($env:DH_NAMESPACE)'"
-                        Write-Host "DH_PASS length  = $($env:DH_PASS.Length)  (a Docker Hub access token is 36 chars)"
-                        Write-Host "DH_PASS looks like an access token (dckr_pat_...): $($env:DH_PASS.StartsWith('dckr_pat_'))"
-                        if ($env:DH_USER -match '[@ ]') { Write-Host "WARNING: DH_USER contains '@' or a space - use your Docker Hub USERNAME, not your email" }
-                        if ($env:DH_USER -ne $env:DH_NAMESPACE) { Write-Host "NOTE: DH_USER differs from DH_NAMESPACE" }
-                        # --- end diagnostics ---
-                        # Token goes to docker via a temp file instead of a PowerShell pipe, so no encoding/BOM/newline can alter it
                         $tmp = New-TemporaryFile
                         [System.IO.File]::WriteAllText($tmp.FullName, $env:DH_PASS)
                         cmd /c "docker login -u $($env:DH_USER) --password-stdin < `"$($tmp.FullName)`""
@@ -192,7 +167,6 @@ pipeline {
                     '''
                 }
 
-                // (b) Tag the release in Git
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     withCredentials([usernamePassword(credentialsId: 'github-token',
                                                       usernameVariable: 'GH_USER',
@@ -208,7 +182,6 @@ pipeline {
                     }
                 }
 
-                // (c) Promote to production: pull the image FROM Docker Hub and run it on port 5000
                 withEnv(["APP_IMAGE=${env.PROD_IMAGE}", "HOST_PORT=${env.PROD_PORT}"]) {
                     bat 'docker compose -p evat-prod pull'
                     bat 'docker compose -p evat-prod up -d'
@@ -228,19 +201,16 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 7
+        // Stage 7
         stage('Monitoring') {
             steps {
-                // Make sure Uptime Kuma is running next to the production app
                 withEnv(["APP_IMAGE=${env.PROD_IMAGE}", "HOST_PORT=${env.PROD_PORT}"]) {
                     bat 'docker compose -p evat-prod --profile monitoring up -d'
                 }
                 script { waitForHttp("${env.KUMA_URL}/") }
 
-                // Production health confirmation
                 script { waitForHttp("http://localhost:${env.PROD_PORT}/") }
 
-                // Send a "release OK" heartbeat to the Kuma push monitor
                 withCredentials([string(credentialsId: 'uptime-kuma-push-token', variable: 'KUMA_TOKEN')]) {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
@@ -262,7 +232,6 @@ pipeline {
             echo "Pipeline OK - ${env.PROD_IMAGE} is running in production on port ${env.PROD_PORT}."
         }
         failure {
-            // Automatic alert: a "down" heartbeat makes Uptime Kuma fire your notification (email/Discord/etc.)
             script {
                 try {
                     withCredentials([string(credentialsId: 'uptime-kuma-push-token', variable: 'KUMA_TOKEN')]) {

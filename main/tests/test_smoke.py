@@ -1,8 +1,3 @@
-"""Smoke tests executed by Jenkins inside the built Docker image (WORKDIR /main).
-
-They are static on purpose: importing run.py would try to reach MongoDB,
-which is not available in the Test stage and made the stage wait ~30 seconds.
-"""
 import ast
 import importlib
 import pathlib
