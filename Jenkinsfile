@@ -166,6 +166,14 @@ pipeline {
                                                   passwordVariable: 'DH_PASS')]) {
                     powershell '''
                         $remote = "$($env:DH_NAMESPACE)/$($env:APP_NAME)"
+                        # --- temporary credential diagnostics: prints lengths/flags only, never the secret ---
+                        Write-Host "DH_USER         = '$($env:DH_USER)' (length $($env:DH_USER.Length))"
+                        Write-Host "DH_NAMESPACE    = '$($env:DH_NAMESPACE)'"
+                        Write-Host "DH_PASS length  = $($env:DH_PASS.Length)  (a Docker Hub access token is 36 chars)"
+                        Write-Host "DH_PASS looks like an access token (dckr_pat_...): $($env:DH_PASS.StartsWith('dckr_pat_'))"
+                        if ($env:DH_USER -match '[@ ]') { Write-Host "WARNING: DH_USER contains '@' or a space - use your Docker Hub USERNAME, not your email" }
+                        if ($env:DH_USER -ne $env:DH_NAMESPACE) { Write-Host "NOTE: DH_USER differs from DH_NAMESPACE" }
+                        # --- end diagnostics ---
                         $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
                         if ($LASTEXITCODE -ne 0) { exit 1 }
                         docker tag $env:LOCAL_IMAGE "${remote}:$($env:IMAGE_TAG)"
