@@ -1,20 +1,64 @@
 # Used by Jenkins for BOTH environments (different project name + port):
 #   docker compose -p evat-staging up -d   (APP_IMAGE=local image,  HOST_PORT=5001)
 #   docker compose -p evat-prod    up -d   (APP_IMAGE=Docker Hub,   HOST_PORT=5000)
+#
+# The Flask app reads DATABASE_URL and connects with tls=True (see main/app/__init__.py),
+# so the bundled MongoDB runs with TLS using a self-signed certificate generated on first start.
+# To use MongoDB Atlas instead, set DATABASE_URL in the environment before running compose.
 services:
   app:
     image: ${APP_IMAGE:-evat-data-science:latest}
     ports:
       - "${HOST_PORT:-5000}:5000"
     environment:
-      - MONGO_URI=${MONGO_URI:-}
+      - DATABASE_URL=${DATABASE_URL:-mongodb://mongo:27017}
+      - GOOGLE_MAP_API_KEY=${GOOGLE_MAP_API_KEY:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 5000), 3)"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 30s
+
+  # One-shot job: creates a self-signed TLS certificate for MongoDB (skipped if it already exists)
+  mongo-certs:
+    image: alpine/openssl
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ ! -f /certs/mongo.pem ]; then
+          openssl req -newkey rsa:2048 -nodes -x509 -days 3650 -subj "/CN=mongo" -keyout /certs/key.pem -out /certs/cert.pem &&
+          cat /certs/key.pem /certs/cert.pem > /certs/mongo.pem &&
+          chmod 644 /certs/mongo.pem
+        fi
+    volumes:
+      - mongo_certs:/certs
+
+  mongo:
+    image: mongo:7
+    command:
+      - mongod
+      - --bind_ip_all
+      - --tlsMode=requireTLS
+      - --tlsCertificateKeyFile=/certs/mongo.pem
+      - --tlsAllowConnectionsWithoutCertificates
+    depends_on:
+      mongo-certs:
+        condition: service_completed_successfully
+    volumes:
+      - mongo_data:/data/db
+      - mongo_certs:/certs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--tls", "--tlsAllowInvalidCertificates", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
 
   # Monitoring + alerting (only started with --profile monitoring)
   # Dashboard: http://localhost:3001
@@ -29,4 +73,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  mongo_data:
+  mongo_certs:
   uptime_kuma_data:

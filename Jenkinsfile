@@ -141,6 +141,18 @@ pipeline {
                     bat 'docker compose -p evat-staging ps'
                 }
             }
+            post {
+                failure {
+                    // Show WHY staging did not come up (container state + app logs)
+                    withEnv(["APP_IMAGE=${env.LOCAL_IMAGE}", "HOST_PORT=${env.STAGING_PORT}"]) {
+                        bat '''
+                            docker compose -p evat-staging ps -a
+                            docker compose -p evat-staging logs --tail 100 app
+                            exit /b 0
+                        '''
+                    }
+                }
+            }
         }
 
         // ---------------------------------------------------------------- 6
@@ -185,6 +197,17 @@ pipeline {
                     bat 'docker compose -p evat-prod pull'
                     bat 'docker compose -p evat-prod up -d'
                     script { waitForHttp("http://localhost:${env.PROD_PORT}/") }
+                }
+            }
+            post {
+                failure {
+                    withEnv(["APP_IMAGE=${env.PROD_IMAGE}", "HOST_PORT=${env.PROD_PORT}"]) {
+                        bat '''
+                            docker compose -p evat-prod ps -a
+                            docker compose -p evat-prod logs --tail 100 app
+                            exit /b 0
+                        '''
+                    }
                 }
             }
         }

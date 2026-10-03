@@ -1,8 +1,11 @@
+"""Smoke tests executed by Jenkins inside the built Docker image (WORKDIR /main).
+
+They are static on purpose: importing run.py would try to reach MongoDB,
+which is not available in the Test stage and made the stage wait ~30 seconds.
+"""
 import ast
 import importlib
 import pathlib
-
-import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -14,6 +17,10 @@ def test_requirements_file_exists():
 def test_entrypoint_exists():
     # Dockerfile sets FLASK_APP=run.py
     assert (ROOT / "run.py").is_file()
+
+
+def test_app_package_exists():
+    assert (ROOT / "app" / "__init__.py").is_file()
 
 
 def test_all_python_sources_are_valid_syntax():
@@ -28,13 +35,6 @@ def test_all_python_sources_are_valid_syntax():
     assert not errors, "\n".join(errors)
 
 
-def test_flask_is_installed():
-    assert importlib.import_module("flask") is not None
-
-
-def test_app_module_imports():
-    try:
-        module = importlib.import_module("run")
-    except Exception as exc:  # e.g. needs MongoDB / .env at import time
-        pytest.skip(f"run.py needs runtime config to import: {exc}")
-    assert module is not None
+def test_core_dependencies_installed():
+    for module in ("flask", "flask_restx"):
+        assert importlib.import_module(module) is not None
