@@ -1,3 +1,15 @@
+// =============================================================================
+// EVAT Data Science - Jenkins CI/CD pipeline (WINDOWS agent)
+// Stages: Build > Test > Code Quality > Security > Deploy > Release > Monitoring
+//
+// Credentials expected in Jenkins (Manage Jenkins > Credentials > Global):
+//   sonarqube-token  (Secret text)
+//   dockerhub-creds  (Username with password)
+//   github-token     (Username with password - PAT)
+//   uptime-kuma-push-token  (Secret text)  <- create this one for the Monitoring stage
+// =============================================================================
+
+// Polls a URL until the service answers with anything below HTTP 500.
 def waitForHttp(String url) {
     withEnv(["CHECK_URL=${url}"]) {
         powershell '''
@@ -36,24 +48,27 @@ pipeline {
         IMAGE_TAG      = "${env.BUILD_NUMBER}"
         LOCAL_IMAGE    = "evat-data-science:${env.BUILD_NUMBER}"
 
-        DH_NAMESPACE   = 'tracynguyen203'                                   
-        GITHUB_REPO    = 'github.com/tracynguyen203/EVAT-Data-Science.git'
+        // ---- CHANGE THESE ----
+        DH_NAMESPACE   = 'tracynguyen203'                                   // your Docker Hub username
+        GITHUB_REPO    = 'github.com/tracynguyen203/EVAT-Data-Science.git' // repo you can push tags to
+        // ----------------------
 
         PROD_IMAGE     = "tracynguyen203/evat-data-science:${env.BUILD_NUMBER}"
         SONAR_HOST_URL = 'http://host.docker.internal:9000'
         STAGING_PORT   = '5001'
         PROD_PORT      = '5000'
-        DD_SITE        = 'datadoghq.com' 
+        KUMA_URL       = 'http://localhost:3001'   // Uptime Kuma dashboard
         DOCKER_BUILDKIT = '1'
     }
 
     stages {
 
-        // Stage 1
+        // ---------------------------------------------------------------- 1
         stage('Build') {
             steps {
                 bat 'git log -1 --oneline'
                 bat 'docker version'
+                // Build artefact = versioned Docker image built from the root Dockerfile
                 bat 'docker build -t %LOCAL_IMAGE% -t %APP_NAME%:latest .'
                 bat '''
                     if not exist artifacts mkdir artifacts
@@ -63,10 +78,11 @@ pipeline {
             }
         }
 
-        // Stage 2
+        // ---------------------------------------------------------------- 2
         stage('Test') {
             steps {
                 bat 'if not exist reports mkdir reports'
+                // Tests run INSIDE the freshly built image, so they validate the real artefact
                 bat '''
                     docker run --rm -v "%WORKSPACE%/reports:/reports" %LOCAL_IMAGE% sh -c "pip install --no-cache-dir -q pytest && python -m pytest tests -v --junitxml=/reports/junit.xml"
                 '''
@@ -76,10 +92,11 @@ pipeline {
             }
         }
 
-        // Stage 3
+        // ---------------------------------------------------------------- 3
         stage('Code Quality') {
             steps {
                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                    // UNSTABLE (not FAILED) if the quality gate fails, so later stages still run
                     catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                         bat '''
                             docker run --rm -e SONAR_HOST_URL=%SONAR_HOST_URL% -e SONAR_TOKEN -v "%WORKSPACE%:/usr/src" sonarsource/sonar-scanner-cli -Dsonar.projectBaseDir=/usr/src -Dsonar.projectVersion=%IMAGE_TAG% -Dsonar.qualitygate.wait=true
@@ -89,16 +106,19 @@ pipeline {
             }
         }
 
-        // Stage 4
+        // ---------------------------------------------------------------- 4
         stage('Security') {
             steps {
                 bat 'if not exist reports mkdir reports'
+
+                // (a) Dependency vulnerabilities in requirements.txt
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     bat '''
                         docker run --rm -v "%WORKSPACE%:/src" -w /src python:3.12.3-slim sh -c "pip install -q pip-audit && pip-audit -r main/requirements.txt --desc > reports/pip-audit.txt 2>&1; rc=$?; cat reports/pip-audit.txt; exit $rc"
                     '''
                 }
 
+                // (b) OS + library vulnerabilities in the built image (HIGH/CRITICAL with a fix available)
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     bat '''
                         docker run --rm -v //var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ -v "%WORKSPACE%/reports:/reports" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --no-progress --exit-code 1 --output /reports/trivy.txt %LOCAL_IMAGE%
@@ -110,9 +130,10 @@ pipeline {
             }
         }
 
-        // Stage 5
+        // ---------------------------------------------------------------- 5
         stage('Deploy') {
             steps {
+                // Staging = same image, run via Docker Compose on port 5001
                 withEnv(["APP_IMAGE=${env.LOCAL_IMAGE}", "HOST_PORT=${env.STAGING_PORT}"]) {
                     bat 'docker compose -p evat-staging down --remove-orphans'
                     bat 'docker compose -p evat-staging up -d'
@@ -122,9 +143,10 @@ pipeline {
             }
         }
 
-        // Stage 6
+        // ---------------------------------------------------------------- 6
         stage('Release') {
             steps {
+                // (a) Publish the versioned image to Docker Hub
                 withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
                                                   usernameVariable: 'DH_USER',
                                                   passwordVariable: 'DH_PASS')]) {
@@ -142,6 +164,7 @@ pipeline {
                     '''
                 }
 
+                // (b) Tag the release in Git
                 catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
                     withCredentials([usernamePassword(credentialsId: 'github-token',
                                                       usernameVariable: 'GH_USER',
@@ -157,50 +180,37 @@ pipeline {
                     }
                 }
 
+                // (c) Promote to production: pull the image FROM Docker Hub and run it on port 5000
                 withEnv(["APP_IMAGE=${env.PROD_IMAGE}", "HOST_PORT=${env.PROD_PORT}"]) {
                     bat 'docker compose -p evat-prod pull'
-                    bat 'docker compose -p evat-prod up -d --remove-orphans'
+                    bat 'docker compose -p evat-prod up -d'
                     script { waitForHttp("http://localhost:${env.PROD_PORT}/") }
                 }
             }
         }
 
-        // Stage 7
+        // ---------------------------------------------------------------- 7
         stage('Monitoring') {
             steps {
-                withCredentials([string(credentialsId: 'datadog-api-key', variable: 'DD_API_KEY')]) {
-                    withEnv(["APP_IMAGE=${env.PROD_IMAGE}", "HOST_PORT=${env.PROD_PORT}"]) {
-                        // Start the Datadog Agent next to the production container
-                        bat 'docker compose -p evat-prod --profile monitoring up -d'
-                    }
+                // Make sure Uptime Kuma is running next to the production app
+                withEnv(["APP_IMAGE=${env.PROD_IMAGE}", "HOST_PORT=${env.PROD_PORT}"]) {
+                    bat 'docker compose -p evat-prod --profile monitoring up -d'
+                }
+                script { waitForHttp("${env.KUMA_URL}/") }
 
+                // Production health confirmation
+                script { waitForHttp("http://localhost:${env.PROD_PORT}/") }
+
+                // Send a "release OK" heartbeat to the Kuma push monitor
+                withCredentials([string(credentialsId: 'uptime-kuma-push-token', variable: 'KUMA_TOKEN')]) {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
-                        $base    = "https://api.$($env:DD_SITE)"
-                        $headers = @{ 'DD-API-KEY' = $env:DD_API_KEY }
-                        $ts      = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-                        $tags    = @('app:evat-data-science', 'env:production', 'source:jenkins')
-
-                        $event = @{
-                            title      = "EVAT build #$($env:BUILD_NUMBER) released to production"
-                            text       = "Image $($env:PROD_IMAGE) is live. $($env:BUILD_URL)"
-                            alert_type = 'success'
-                            tags       = $tags
-                        } | ConvertTo-Json -Depth 5
-                        Invoke-RestMethod -Method Post -Uri "$base/api/v1/events" -Headers $headers -ContentType 'application/json' -Body $event | Out-Null
-
-                        $series = @{ series = @( @{
-                            metric = 'evat.deploy.success'
-                            type   = 3
-                            points = @( @{ timestamp = $ts; value = 1 } )
-                            tags   = $tags
-                        } ) } | ConvertTo-Json -Depth 6
-                        Invoke-RestMethod -Method Post -Uri "$base/api/v2/series" -Headers $headers -ContentType 'application/json' -Body $series | Out-Null
-
-                        Write-Host "Datadog event and metric sent."
+                        $msg = [uri]::EscapeDataString("Build $($env:BUILD_NUMBER) released to production")
+                        $url = "$($env:KUMA_URL)/api/push/$($env:KUMA_TOKEN)?status=up&msg=$msg&ping="
+                        $r = Invoke-RestMethod -Uri $url -TimeoutSec 15
+                        Write-Host "Uptime Kuma heartbeat sent: $($r | ConvertTo-Json -Compress)"
                     '''
                 }
-                script { waitForHttp("http://localhost:${env.PROD_PORT}/") }
             }
         }
     }
@@ -213,23 +223,18 @@ pipeline {
             echo "Pipeline OK - ${env.PROD_IMAGE} is running in production on port ${env.PROD_PORT}."
         }
         failure {
+            // Automatic alert: a "down" heartbeat makes Uptime Kuma fire your notification (email/Discord/etc.)
             script {
                 try {
-                    withCredentials([string(credentialsId: 'datadog-api-key', variable: 'DD_API_KEY')]) {
+                    withCredentials([string(credentialsId: 'uptime-kuma-push-token', variable: 'KUMA_TOKEN')]) {
                         powershell '''
-                            $base    = "https://api.$($env:DD_SITE)"
-                            $headers = @{ 'DD-API-KEY' = $env:DD_API_KEY }
-                            $event = @{
-                                title      = "EVAT pipeline FAILED (build #$($env:BUILD_NUMBER))"
-                                text       = "See $($env:BUILD_URL)console"
-                                alert_type = 'error'
-                                tags       = @('app:evat-data-science', 'source:jenkins')
-                            } | ConvertTo-Json -Depth 5
-                            Invoke-RestMethod -Method Post -Uri "$base/api/v1/events" -Headers $headers -ContentType 'application/json' -Body $event | Out-Null
+                            $msg = [uri]::EscapeDataString("Pipeline FAILED - build $($env:BUILD_NUMBER)")
+                            $url = "$($env:KUMA_URL)/api/push/$($env:KUMA_TOKEN)?status=down&msg=$msg&ping="
+                            Invoke-RestMethod -Uri $url -TimeoutSec 15 | Out-Null
                         '''
                     }
                 } catch (err) {
-                    echo "Could not notify Datadog: ${err}"
+                    echo "Could not notify Uptime Kuma: ${err}"
                 }
             }
         }
