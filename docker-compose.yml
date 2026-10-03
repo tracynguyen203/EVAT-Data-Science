@@ -45,6 +45,7 @@ services:
       - --bind_ip_all
       - --tlsMode=requireTLS
       - --tlsCertificateKeyFile=/certs/mongo.pem
+      - --tlsCAFile=/certs/cert.pem
       - --tlsAllowConnectionsWithoutCertificates
     depends_on:
       mongo-certs:
